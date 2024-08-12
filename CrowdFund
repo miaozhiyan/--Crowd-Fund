@@ -1,0 +1,128 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.7;
+
+
+interface IERC20 {
+    //用于将一定数量的代币从调用者的地址转移到指定的接收地址 _to ，转移的代币数量由 _value 指定
+    function transfer(address _to, uint256 _value)external returns(bool);
+
+    //允许一个经过授权的地址（通常是一个智能合约或代理）从 _from 地址向 _to 地址转移指定数量 _value 的代币
+    function transferFrom(address _from, address _to, uint256 _value)external returns(bool);
+}
+
+contract CrowdFund{
+    event Launch(uint id,address indexed creator,uint goal,uint32 startAt,uint32 endAt);
+    event Cancel(uint id);
+    event Pledge(uint indexed id,address indexed  caller,uint amount);
+    event UnPledge(uint indexed id,address indexed  caller,uint amount);
+    event Claim(uint id);
+    event Refund(uint indexed id,address indexed caller,uint bal);
+    
+    struct Campaign {
+        address creator;
+        // 已经筹到的金额
+        uint pledged;
+        // 众筹的目标金额
+        uint goal;
+        uint32 startAt;
+        uint32 endAt;
+        // 是否领取了金额
+        bool claimed;
+    }
+
+    IERC20 public immutable token;
+    // 有多少个活动正在发起中
+    uint public count;
+
+    mapping (uint=> Campaign) public campaigns;
+
+    mapping (uint =>mapping (address=>uint)) public pledgeAmount;
+
+    constructor(address _token) {
+        token = IERC20(_token);
+    }
+
+    // 发起一个众筹活动
+    function launch(uint _goal,uint32 _startAt,uint32 _endAt)external {
+        require(_startAt >= block.timestamp,"start at < now");
+        require(_endAt >= _startAt,"end < start error");
+        require(_endAt >= block.timestamp + 90 days,"end at > max duration");
+        count += 1;
+        campaigns[count] = Campaign({
+            creator: msg.sender,
+            goal: _goal,
+            pledged: 0,
+            startAt: _startAt,
+            endAt: _endAt,
+            claimed: false
+        });
+
+        emit Launch(count,msg.sender,_goal,_startAt,_endAt);
+    }
+
+    // 取消活动
+    function cancel(uint _id) external {
+        Campaign memory campaign = campaigns[_id];
+
+        require(campaign.creator == msg.sender,"not creator!");
+
+        require(block.timestamp < campaign.startAt,"is started!");
+
+        delete campaigns[_id];
+
+        emit Cancel(_id);
+    }
+
+    // 用户参与
+    function pledge(uint _id,uint _amount)external {
+        Campaign storage campaign = campaigns[_id];
+        require(campaign.startAt < block.timestamp,"not started");
+        require(block.timestamp < campaign.endAt,"is ended");
+
+        campaign.pledged += _amount;
+        pledgeAmount[_id][msg.sender] += _amount;
+        token.transferFrom(msg.sender, address(this), _amount);
+
+        emit Pledge(_id,msg.sender,_amount);
+    }
+
+    // 用户取消参与
+    function unpledge(uint _id,uint _amount)external {
+        Campaign storage campaign = campaigns[_id];
+        require(campaign.startAt < block.timestamp,"not started");
+        require(block.timestamp < campaign.endAt,"is ended");
+
+        campaign.pledged -= _amount;
+        pledgeAmount[_id][msg.sender] -= _amount;
+        token.transferFrom(address(this),msg.sender, _amount);
+
+        emit UnPledge(_id,msg.sender,_amount);
+    }
+
+    // 取走众筹
+    function claim(uint _id)external {
+        Campaign storage campaign = campaigns[_id];
+        require(campaign.creator == msg.sender,"not creator");
+        require(campaign.endAt < block.timestamp,"not ended");
+        require(campaign.pledged >= campaign.goal,"pledged < goal");
+        require(!campaign.claimed,"claimed");
+        campaign.claimed = true;
+
+        token.transfer(msg.sender, campaign.pledged);
+        emit Claim(_id);
+    }
+
+    // 未成功众筹，退回
+    function refund(uint _id)external {
+        Campaign storage campaign = campaigns[_id];
+        require(block.timestamp > campaign.endAt, "not ended");
+        require(campaign.pledged < campaign.goal,"pledge enough");
+        uint bal = pledgeAmount[_id][msg.sender];
+        pledgeAmount[_id][msg.sender] = 0;
+        token.transfer(msg.sender, bal);
+
+        emit Refund(_id,msg.sender,bal);
+
+    }
+
+}
